@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Folii ScreenShield</title>
+<style>
+  :root { --bg:#0f1013; --panel:#17191d; --line:#2c3036; --text:#eceae6; --muted:#8f8b86; --orange:#e04f0b; --green:#22c55e; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; overflow:hidden; background:var(--bg); color:var(--text);
+    font:13px/1.3 "Segoe UI", sans-serif; color-scheme:dark; user-select:none; }
+  button, input { font:inherit; color:inherit; }
+  button { background:#2a2d32; border:1px solid #3a3e45; border-radius:6px; padding:5px 10px; cursor:pointer; }
+  button:hover { background:#34383e; }
+  .app { height:100%; display:grid; grid-template-columns:320px minmax(0,1fr); grid-template-rows:44px minmax(0,1fr) 150px; }
+  header { grid-column:1/3; display:flex; align-items:center; gap:14px; padding:0 14px; background:var(--panel); border-bottom:1px solid var(--line); }
+  header h1 { margin:0; font-size:15px; }
+  #hint { color:var(--muted); flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .round { display:flex; align-items:center; gap:6px; color:var(--muted); }
+  .round input { width:110px; accent-color:var(--orange); }
+  kbd { background:#26292f; border:1px solid #3a3e45; border-radius:4px; padding:0 5px; color:var(--text); font-size:12px; }
+  #list { grid-row:2/4; background:var(--panel); border-right:1px solid var(--line); display:flex; flex-direction:column; min-height:0; }
+  .item { flex:1; min-height:0; display:flex; align-items:center; gap:10px; padding:0 12px; border-bottom:1px solid var(--line); cursor:pointer; position:relative; }
+  .item:hover { background:#1d2025; }
+  .item.on { background:#2a1a12; box-shadow:inset 3px 0 var(--orange); }
+  .item img { height:62%; aspect-ratio:4/3; object-fit:cover; border-radius:4px; background:#0c0d0f; }
+  .item b { display:block; font-size:13px; }
+  .item small { color:var(--muted); font-size:11.5px; }
+  .noimg { height:62%; aspect-ratio:4/3; display:grid; place-items:center; border:1px dashed #3a3e45; border-radius:4px; color:var(--muted); font-size:18px; }
+  .dot { margin-left:auto; width:10px; height:10px; border-radius:50%; background:#3a3e45; flex:none; }
+  .item.part .dot { background:var(--orange); }
+  .item.done .dot { background:var(--green); }
+  .stage { position:relative; min-width:0; min-height:0; background:#0c0d0f; }
+  #view { position:absolute; inset:0; width:100%; height:100%; touch-action:none; }
+  #msg { position:absolute; left:12px; bottom:10px; background:#000a; padding:3px 9px; border-radius:5px; color:#ddd; pointer-events:none; }
+  .strip { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; padding:8px; background:var(--panel); border-top:1px solid var(--line); min-width:0; }
+  figure { margin:0; min-width:0; min-height:0; display:grid; grid-template-rows:minmax(0,1fr) 18px; gap:3px; cursor:pointer; }
+  figure canvas { width:100%; height:100%; min-height:0; background:#0c0d0f; border-radius:5px; display:block; }
+  figure.on canvas { outline:1px solid var(--orange); outline-offset:-1px; }
+  figcaption { color:var(--muted); font-size:12px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>Folii ScreenShield · <span id="brand"></span></h1>
+    <span id="hint"><kbd>click</kbd> punct · <kbd>Enter</kbd> termină · <kbd>G</kbd> caută pe Google · <kbd>Ctrl+V</kbd> imagine nouă · <kbd>C</kbd> decupare · <kbd>D</kbd>/<kbd>A</kbd> următorul/anteriorul · <kbd>1</kbd>–<kbd>4</kbd> vedere</span>
+    <label class="round">Rotunjire <input id="round" type="range" min="0" max="100" value="20"> <span id="round-val">20</span></label>
+    <button id="google">Caută poze (G)</button>
+    <button id="crop">Decupează (C)</button>
+    <button id="reset">Resetează contur</button>
+  </header>
+  <nav id="list"></nav>
+  <div class="stage"><canvas id="view"></canvas><div id="msg"></div></div>
+  <div class="strip">
+    <figure data-m="source"><canvas></canvas><figcaption>1 · Contur</figcaption></figure>
+    <figure data-m="satin"><canvas></canvas><figcaption>2 · Satin</figcaption></figure>
+    <figure data-m="gloss"><canvas></canvas><figcaption>3 · Lucios</figcaption></figure>
+    <figure data-m="diagram"><canvas></canvas><figcaption>4 · Diagramă</figcaption></figure>
+  </div>
+</div>
+<script>
+const MAX = 2000;
+const DIAG = { W: 2720, H: 1528, BG: '#202226', GRID: '#2a2d33', FILL: '#34363a', OR: '#e04f0b', box: [272, 2448, 252, 1330] };
+
+function roundedPath(g, pts, roundness) {
+  if (pts.length < 3) return;
+  const f = Math.max(0, Math.min(.44, roundness / 100 / 2.2));
+  g.beginPath();
+  if (f === 0) { g.moveTo(pts[0].x, pts[0].y); pts.slice(1).forEach(p => g.lineTo(p.x, p.y)); g.closePath(); return; }
+  pts.forEach((c, i) => {
+    const prev = pts[(i - 1 + pts.length) % pts.length], next = pts[(i + 1) % pts.length];
+    const s = { x: c.x + (prev.x - c.x) * f, y: c.y + (prev.y - c.y) * f };
+    const e = { x: c.x + (next.x - c.x) * f, y: c.y + (next.y - c.y) * f };
+    if (i === 0) g.moveTo(s.x, s.y); else g.lineTo(s.x, s.y);
+    g.quadraticCurveTo(c.x, c.y, e.x, e.y);
+  });
+  g.closePath();
+}
+
+const noise = document.createElement('canvas');
+noise.width = noise.height = 96;
+{
+  const n = noise.getContext('2d'), d = n.createImageData(96, 96);
+  for (let i = 0; i < d.data.length; i += 4) {
+    d.data[i] = d.data[i + 1] = d.data[i + 2] = 150 + Math.random() * 70 - 35;
+    d.data[i + 3] = 70 + Math.random() * 50;
+  }
+  n.putImageData(d, 0, 0);
+}
+
+function paintFoil(g, pts, roundness, kind) {
+  const x0 = Math.min(...pts.map(p => p.x)), x1 = Math.max(...pts.map(p => p.x));
+  const y0 = Math.min(...pts.map(p => p.y)), y1 = Math.max(...pts.map(p => p.y));
+  const bw = Math.max(1, x1 - x0), bh = Math.max(1, y1 - y0);
+  g.save();
+  roundedPath(g, pts, roundness);
+  g.clip();
+  if (kind === 'satin') {
+    g.fillStyle = 'rgba(150,153,158,0.44)'; g.fillRect(x0, y0, bw, bh);
+    const sheen = g.createLinearGradient(x0, y0, x0, y1);
+    sheen.addColorStop(0, 'rgba(255,255,255,0.07)'); sheen.addColorStop(.5, 'rgba(255,255,255,0)'); sheen.addColorStop(1, 'rgba(0,0,0,0.07)');
+    g.fillStyle = sheen; g.fillRect(x0, y0, bw, bh);
+    g.globalAlpha = .16; g.fillStyle = g.createPattern(noise, 'repeat'); g.fillRect(x0, y0, bw, bh);
+  } else {
+    const depth = g.createLinearGradient(x0, y0, x1, y1);
+    depth.addColorStop(0, 'rgba(255,255,255,0.1)'); depth.addColorStop(.55, 'rgba(255,255,255,0.02)'); depth.addColorStop(1, 'rgba(0,0,0,0.14)');
+    g.fillStyle = depth; g.fillRect(x0, y0, bw, bh);
+    const shine = g.createLinearGradient(x0 - bw * .08, y0, x1 + bw * .08, y1);
+    shine.addColorStop(.38, 'rgba(255,255,255,0)'); shine.addColorStop(.47, 'rgba(255,255,255,0.22)'); shine.addColorStop(.5, 'rgba(255,255,255,0.82)');
+    shine.addColorStop(.53, 'rgba(255,255,255,0.22)'); shine.addColorStop(.64, 'rgba(255,255,255,0)');
+    g.fillStyle = shine; g.fillRect(x0, y0, bw, bh);
+    const top = g.createLinearGradient(x0, y0, x0, y0 + bh * .16);
+    top.addColorStop(0, 'rgba(255,255,255,0.32)'); top.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = top; g.fillRect(x0, y0, bw, bh * .16);
+  }
+  g.globalAlpha = 1;
+  const cy = pts.reduce((t, q) => t + q.y, 0) / pts.length;
+  let theta = 0, longest = 0;
+  pts.forEach((q, i) => {
+    const r = pts[(i + 1) % pts.length], len = Math.hypot(r.x - q.x, r.y - q.y);
+    const ang = Math.atan2(r.y - q.y, r.x - q.x);
+    if ((q.y + r.y) / 2 > cy && Math.abs(ang) < Math.PI / 6 && len > longest) { longest = len; theta = ang; }
+  });
+  const c = Math.cos(-theta), sn = Math.sin(-theta);
+  const rp = pts.map(q => ({ x: q.x * c - q.y * sn, y: q.x * sn + q.y * c }));
+  const ry0 = Math.min(...rp.map(q => q.y)), ry1 = Math.max(...rp.map(q => q.y));
+  const rbw = Math.max(...rp.map(q => q.x)) - Math.min(...rp.map(q => q.x)), rbh = ry1 - ry0;
+  let fs = Math.max(10, Math.min(rbh * .06, rbw * .045));
+  const setFont = () => { g.font = `800 ${fs}px "Segoe UI", Arial, sans-serif`; g.letterSpacing = `${fs * .18}px`; };
+  const rowSpan = y => {
+    const xs = [];
+    rp.forEach((q, i) => {
+      const r = rp[(i + 1) % rp.length];
+      if ((q.y <= y) !== (r.y <= y)) xs.push(q.x + (y - q.y) / (r.y - q.y) * (r.x - q.x));
+    });
+    xs.sort((m, n) => m - n);
+    let best = null;
+    for (let i = 0; i + 1 < xs.length; i += 2) if (!best || xs[i + 1] - xs[i] > best[1] - best[0]) best = [xs[i], xs[i + 1]];
+    return best;
+  };
+  setFont();
+  let tw = g.measureText('SCREENSHIELD').width;
+  const fitSpan = y => {
+    const t = rowSpan(y - fs * .6), u = rowSpan(y + fs * .6);
+    if (!t || !u) return null;
+    const l = Math.max(t[0], u[0]) + rbw * .03, r = Math.min(t[1], u[1]) - rbw * .03;
+    return r - l >= tw ? [l, r] : null;
+  };
+  let place = null;
+  for (let k = 0; k < 2 && !place; k++) {
+    for (let y = ry1 - rbh * .1; y > ry0 + rbh * .3; y -= rbh * .01) {
+      const f = fitSpan(y);
+      if (f) { place = { x: (f[0] + f[1]) / 2, y }; break; }
+    }
+    if (!place) { fs *= .7; setFont(); tw = g.measureText('SCREENSHIELD').width; }
+  }
+  if (place) {
+    g.save();
+    g.rotate(theta);
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillStyle = kind === 'satin' ? 'rgba(255,255,255,0.6)' : 'rgba(255,255,255,0.75)';
+    g.fillText('SCREENSHIELD', place.x + fs * .09, place.y);
+    g.restore();
+  }
+  g.restore();
+  g.save();
+  roundedPath(g, pts, roundness);
+  g.lineJoin = g.lineCap = 'round';
+  const span = Math.max(bw, bh);
+  g.strokeStyle = kind === 'satin' ? 'rgba(50,52,56,0.28)' : 'rgba(255,255,255,0.92)';
+  g.lineWidth = Math.max(1, span * (kind === 'satin' ? .0035 : .005));
+  g.stroke();
+  g.restore();
+}
+
+const logo = new Image();
+const logoReady = new Promise(r => { logo.onload = () => r(true); logo.onerror = () => r(false); logo.src = '/logo.png'; });
+
+function diagramCanvas(pts, roundness) {
+  const { W, H, BG, GRID, FILL, OR, box } = DIAG, [rx0, rx1, ry0, ry1] = box;
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const g = c.getContext('2d');
+  g.fillStyle = BG; g.fillRect(0, 0, W, H);
+  g.fillStyle = GRID;
+  for (let x = 17; x < W; x += 267) g.fillRect(x, 0, 17, H);
+  for (let y = 19; y < H; y += 184) g.fillRect(0, y, W, 14);
+  const bx0 = Math.min(...pts.map(p => p.x)), bx1 = Math.max(...pts.map(p => p.x));
+  const by0 = Math.min(...pts.map(p => p.y)), by1 = Math.max(...pts.map(p => p.y));
+  const bw = bx1 - bx0, bh = by1 - by0;
+  const sc = Math.min((rx1 - rx0) / bw, (ry1 - ry0) / bh);
+  const ox = rx0 + ((rx1 - rx0) - bw * sc) / 2 - bx0 * sc, oy = ry0 + ((ry1 - ry0) - bh * sc) / 2 - by0 * sc;
+  const q = pts.map(p => ({ x: ox + p.x * sc, y: oy + p.y * sc }));
+  roundedPath(g, q, roundness);
+  g.fillStyle = FILL; g.fill();
+  g.lineWidth = 5; g.strokeStyle = OR; g.stroke();
+  if (logo.complete && logo.naturalWidth) {
+    const lw = Math.max(240, Math.min(544, bw * sc * .26)), lh = logo.naturalHeight * lw / logo.naturalWidth;
+    g.drawImage(logo, ox + (bx0 + bw / 2) * sc - lw / 2, oy + (by0 + bh / 2) * sc - lh / 2, lw, lh);
+  }
+  return c;
+}
+
+// ---------- state ----------
+let products = [], cur = -1, mode = 'source';
+const items = new Map();   // key -> { img(work canvas), points, roundness, closed, out:{satin,gloss,diagram} }
+const view = document.getElementById('view');
+const msg = document.getElementById('msg');
+const roundEl = document.getElementById('round');
+let drag = -1, sel = -1, saveTimer = 0, cropping = false, crop = null, cropAnchor = null;
+
+const item = () => items.get(products[cur].key);
+
+const NATIVE_MAX = 5000;
+function canvasOf(w, h, draw) {
+  const c = document.createElement('canvas'); c.width = Math.max(1, Math.round(w)); c.height = Math.max(1, Math.round(h));
+  const g = c.getContext('2d'); g.imageSmoothingQuality = 'high'; draw(g, c); return c;
+}
+// work = canvas with long side MAX (upscaled when needed, so foil and text are drawn crisp);
+// work.orig = native-resolution pixels kept for later crops and for saving the source.
+function makeWork(orig) {
+  const k = MAX / Math.max(orig.width, orig.height);
+  const work = canvasOf(orig.width * k, orig.height * k, (g, c) => g.drawImage(orig, 0, 0, c.width, c.height));
+  work.orig = orig;
+  return work;
+}
+function loadWork(url) {
+  return new Promise((resolve, reject) => {
+    const im = new Image();
+    im.onload = () => {
+      const k = Math.min(1, NATIVE_MAX / Math.max(im.naturalWidth, im.naturalHeight));
+      resolve(makeWork(canvasOf(im.naturalWidth * k, im.naturalHeight * k, (g, c) => g.drawImage(im, 0, 0, c.width, c.height))));
+    };
+    im.onerror = reject;
+    im.src = url;
+  });
+}
+
+function pixelPoints(it) { return it.points.map(p => ({ x: p.x * it.img.width, y: p.y * it.img.height })); }
+
+function regen(it) {
+  if (!it.img) { it.out = null; return; }
+  const pts = pixelPoints(it);
+  it.out = null;
+  if (!it.closed || pts.length < 3) return;
+  const mk = kind => {
+    const c = document.createElement('canvas'); c.width = it.img.width; c.height = it.img.height;
+    const g = c.getContext('2d'); g.drawImage(it.img, 0, 0); paintFoil(g, pts, it.roundness, kind); return c;
+  };
+  it.out = { satin: mk('satin'), gloss: mk('gloss'), diagram: diagramCanvas(pts, it.roundness) };
+}
+
+function scheduleSave() {
+  clearTimeout(saveTimer);
+  const key = products[cur].key, it = item();
+  saveTimer = setTimeout(async () => {
+    regen(it);
+    const body = { points: it.points, roundness: it.roundness, closed: it.closed && !!it.out };
+    if (it.out) {
+      body.satin = it.out.satin.toDataURL('image/jpeg', .92);
+      body.gloss = it.out.gloss.toDataURL('image/jpeg', .92);
+      body.diagram = it.out.diagram.toDataURL('image/png');
+    }
+    const r = await fetch('/api/state/' + key, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    products.find(p => p.key === key).done = r.ok && body.closed;
+    products.find(p => p.key === key).state = body.points.length ? body : null;
+    renderList(); render();
+    msg.textContent = r.ok ? (body.closed ? 'Salvat · 3 imagini gata' : 'Contur salvat (neterminat)') : 'Eroare la salvare';
+  }, 450);
+}
+
+// ---------- drawing ----------
+function contain(sw, sh, dw, dh) { const s = Math.min(dw / sw, dh / sh); return { ox: (dw - sw * s) / 2, oy: (dh - sh * s) / 2, dw: sw * s, dh: sh * s }; }
+function fit(canvas) {
+  const dpr = devicePixelRatio || 1, w = canvas.clientWidth, h = canvas.clientHeight;
+  if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) { canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr); }
+  const g = canvas.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.imageSmoothingQuality = 'high';
+  g.fillStyle = '#0c0d0f'; g.fillRect(0, 0, w, h);
+  return { g, w, h };
+}
+function show(g, w, h, src) { if (!src) return null; const m = contain(src.width, src.height, w, h); g.drawImage(src, m.ox, m.oy, m.dw, m.dh); return m; }
+
+function draw(canvas, m, handles) {
+  const { g, w, h } = fit(canvas);
+  if (cur < 0 || !item()) return null;
+  const it = item();
+  if (!it.img) {
+    g.fillStyle = '#8f8b86'; g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.font = `${Math.max(11, Math.min(18, w / 22))}px Segoe UI`;
+    if (handles) { g.fillText('Nicio imagine încă', w / 2, h / 2 - 14); g.fillText('Apasă G ca să cauți pe Google, apoi Ctrl+V ca să lipești', w / 2, h / 2 + 14); }
+    return null;
+  }
+  const src = m === 'source' ? it.img : it.out?.[m];
+  if (!src) {
+    show(g, w, h, it.img);
+    if (m !== 'source') { g.fillStyle = '#000a'; g.fillRect(0, 0, w, h); g.fillStyle = '#aaa'; g.textAlign = 'center'; g.font = '13px Segoe UI'; g.fillText('după contur (Enter)', w / 2, h / 2); }
+  }
+  const map = show(g, w, h, src);
+  if (m === 'source' && handles && cropping && crop && !it.points.length) drawCrop(g, map, w, h);
+  if (m === 'source' && it.points.length) {
+    const pts = it.points.map(p => ({ x: map.ox + p.x * map.dw, y: map.oy + p.y * map.dh }));
+    if (it.closed && pts.length >= 3) roundedPath(g, pts, it.roundness);
+    else { g.beginPath(); g.moveTo(pts[0].x, pts[0].y); pts.slice(1).forEach(p => g.lineTo(p.x, p.y)); }
+    g.lineJoin = 'round'; g.lineWidth = 2; g.strokeStyle = DIAG.OR; g.stroke();
+    if (!it.closed && pts.length >= 3) {
+      g.beginPath(); g.moveTo(pts.at(-1).x, pts.at(-1).y); g.lineTo(pts[0].x, pts[0].y);
+      g.setLineDash([6, 6]); g.stroke(); g.setLineDash([]);
+    }
+    if (handles && cropping && crop) drawCrop(g, map, w, h);
+    if (handles) pts.forEach((p, i) => {
+      g.beginPath(); g.arc(p.x, p.y, i === sel ? 7 : 5, 0, 7); g.fillStyle = i === 0 && !it.closed ? DIAG.OR : '#fff'; g.fill(); g.lineWidth = 2; g.strokeStyle = DIAG.OR; g.stroke();
+    });
+  }
+  return map;
+}
+
+function drawCrop(g, map, w, h) {
+  const x = map.ox + crop.x * map.dw, y = map.oy + crop.y * map.dh, cw = crop.w * map.dw, ch = crop.h * map.dh;
+  g.save();
+  g.fillStyle = 'rgba(0,0,0,0.6)';
+  g.beginPath(); g.rect(0, 0, w, h); g.rect(x, y, cw, ch); g.fill('evenodd');
+  g.strokeStyle = '#fff'; g.lineWidth = 1.5; g.strokeRect(x + .5, y + .5, cw, ch);
+  g.restore();
+}
+
+function render() {
+  draw(view, mode, true);
+  document.querySelectorAll('figure').forEach(f => { draw(f.querySelector('canvas'), f.dataset.m, false); f.classList.toggle('on', f.dataset.m === mode); });
+  roundEl.value = cur >= 0 && item() ? item().roundness : 20;
+  document.getElementById('round-val').textContent = roundEl.value;
+}
+
+function renderList() {
+  const nav = document.getElementById('list');
+  nav.replaceChildren(...products.map((p, i) => {
+    const d = document.createElement('div');
+    d.className = 'item' + (i === cur ? ' on' : '') + (p.done ? ' done' : p.state?.points?.length ? ' part' : '');
+    d.innerHTML = `${p.source ? `<img src="/src/${p.source}?v=${p.v || 0}" alt="">` : '<div class="noimg">?</div>'}<div><b></b><small></small></div><span class="dot"></span>`;
+    d.querySelector('b').textContent = `${p.brand} ${p.model} · ${p.generation}`;
+    d.querySelector('small').textContent = `${p.screen}${p.size ? ' ' + p.size : ''} · ${p.price ? p.price + ' lei' : 'preț de completat'}`;
+    d.onclick = () => select(i);
+    return d;
+  }));
+}
+
+async function select(i) {
+  if (i < 0 || i >= products.length) return;
+  cur = i; sel = -1; mode = 'source';
+  const p = products[i];
+  document.title = `${p.model} · Folii ScreenShield`;
+  if (cropping) setCropping(false);
+  if (!items.has(p.key)) {
+    msg.textContent = 'Se încarcă...';
+    const img = p.source ? await loadWork('/src/' + p.source) : null;
+    const s = p.state || { points: [], roundness: 20, closed: false };
+    const it = { img, points: s.points, roundness: s.roundness, closed: !!s.closed };
+    await logoReady; regen(it);
+    items.set(p.key, it);
+    if (it.closed && it.out && !p.done) scheduleSave();
+  }
+  if (cur !== i) return;
+  const it = item();
+  msg.textContent = !it.img ? 'Fără imagine · G = caută pe Google, Ctrl+V = lipește' : it.closed ? 'Contur terminat · trage punctele ca să ajustezi' : 'Click pe colțurile displayului, în ordine; Enter la final';
+  renderList(); render();
+}
+
+// ---------- input ----------
+function mapOf() { const it = item(); return contain(it.img.width, it.img.height, view.clientWidth, view.clientHeight); }
+function hit(e) {
+  const it = item(), m = mapOf(), r = view.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+  const idx = it.points.findIndex(p => Math.hypot(m.ox + p.x * m.dw - x, m.oy + p.y * m.dh - y) < 10);
+  return { idx, n: { x: (x - m.ox) / m.dw, y: (y - m.oy) / m.dh } };
+}
+view.addEventListener('pointerdown', e => {
+  if (cur < 0 || !item()?.img || mode !== 'source') return;
+  if (cropping) {
+    const n = hit(e).n;
+    cropAnchor = { x: Math.min(1, Math.max(0, n.x)), y: Math.min(1, Math.max(0, n.y)) };
+    crop = { ...cropAnchor, w: 0, h: 0 };
+    view.setPointerCapture(e.pointerId);
+    return;
+  }
+  const it = item(), h = hit(e);
+  if (h.idx === 0 && !it.closed && it.points.length >= 3) { finish(); return; }
+  if (h.idx >= 0) { drag = sel = h.idx; view.setPointerCapture(e.pointerId); }
+  else if (!it.closed && h.n.x >= 0 && h.n.x <= 1 && h.n.y >= 0 && h.n.y <= 1) { it.points.push(h.n); sel = it.points.length - 1; scheduleSave(); }
+  render();
+});
+view.addEventListener('pointermove', e => {
+  if (cropping && cropAnchor) {
+    const n = hit(e).n, x = Math.min(1, Math.max(0, n.x)), y = Math.min(1, Math.max(0, n.y));
+    crop = { x: Math.min(x, cropAnchor.x), y: Math.min(y, cropAnchor.y), w: Math.abs(x - cropAnchor.x), h: Math.abs(y - cropAnchor.y) };
+    render();
+    return;
+  }
+  if (drag < 0) return;
+  const it = item(), n = hit(e).n;
+  it.points[drag] = { x: Math.min(1, Math.max(0, n.x)), y: Math.min(1, Math.max(0, n.y)) };
+  render();
+});
+view.addEventListener('pointerup', () => { cropAnchor = null; if (drag >= 0) { drag = -1; scheduleSave(); } });
+
+async function saveSource() {
+  const p = products[cur];
+  const r = await fetch('/api/source/' + p.key, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ image: item().img.orig.toDataURL('image/jpeg', .95) }) });
+  if (r.ok) { p.source = (await r.json()).source; p.v = Date.now(); renderList(); }
+  else msg.textContent = 'Eroare la salvarea imaginii';
+}
+
+function setCropping(on) {
+  cropping = on; crop = null; cropAnchor = null; mode = 'source';
+  document.getElementById('crop').textContent = on ? 'Anulează crop (Esc)' : 'Decupează (C)';
+  msg.textContent = on ? 'Trage un dreptunghi peste zona de păstrat, apoi Enter' : '';
+  render();
+}
+
+async function applyCrop() {
+  if (!crop || crop.w < .02 || crop.h < .02) { msg.textContent = 'Selectează mai întâi o zonă'; return; }
+  const it = item(), c = crop, o = it.img.orig;
+  const cropped = canvasOf(c.w * o.width, c.h * o.height, (g, cv) =>
+    g.drawImage(o, c.x * o.width, c.y * o.height, c.w * o.width, c.h * o.height, 0, 0, cv.width, cv.height));
+  it.img = makeWork(cropped);
+  it.points = it.points.map(q => ({ x: Math.min(1, Math.max(0, (q.x - c.x) / c.w)), y: Math.min(1, Math.max(0, (q.y - c.y) / c.h)) }));
+  setCropping(false);
+  regen(it);
+  await saveSource();
+  scheduleSave();
+  msg.textContent = 'Imagine decupată';
+}
+
+addEventListener('paste', async e => {
+  if (cur < 0 || !item()) return;
+  const file = [...(e.clipboardData?.files || [])].find(f => f.type.startsWith('image/'));
+  if (!file) return;
+  e.preventDefault();
+  const url = URL.createObjectURL(file);
+  try {
+    const it = item();
+    it.img = await loadWork(url);
+    it.points = []; it.closed = false; it.out = null; sel = -1;
+    setCropping(false);
+    await saveSource();
+    scheduleSave();
+    msg.textContent = 'Imagine nouă · trasează conturul din nou';
+  } catch { msg.textContent = 'Imaginea lipită nu poate fi citită'; }
+  URL.revokeObjectURL(url);
+});
+
+document.getElementById('crop').onclick = () => { if (cur >= 0 && item()?.img) setCropping(!cropping); };
+function googleImages() {
+  if (cur < 0) return;
+  const p = products[cur], year = (p.generation.match(/\d{4}/) || [''])[0];
+  const kind = /ceasuri/i.test(p.screen) ? 'cluster' : 'infotainment screen';
+  const q = `${p.brand} ${p.model} ${year} ${kind}`.replace(/\s+/g, ' ').trim();
+  window.open(`https://www.google.com/search?tbm=isch&tbs=isz:l&q=${encodeURIComponent(q)}`, '_blank');
+}
+document.getElementById('google').onclick = googleImages;
+
+function finish() {
+  const it = item();
+  if (it.points.length < 3) { msg.textContent = 'Minim 3 puncte'; return; }
+  it.closed = true; mode = 'source'; scheduleSave(); render();
+}
+roundEl.oninput = () => { if (cur < 0 || !item()) return; item().roundness = +roundEl.value; item().closed && scheduleSave(); render(); };
+document.getElementById('reset').onclick = () => {
+  if (cur < 0 || !item() || !item().points.length || !confirm('Ștergi conturul acestui produs?')) return;
+  const it = item(); it.points = []; it.closed = false; it.out = null; sel = -1; scheduleSave(); render();
+};
+document.querySelectorAll('figure').forEach(f => f.onclick = () => { mode = f.dataset.m; render(); });
+
+addEventListener('keydown', e => {
+  if (e.ctrlKey || e.metaKey || e.altKey || cur < 0) return;
+  const k = e.key.toLowerCase();
+  if (k === 'd' || k === 'arrowright') select((cur + 1) % products.length);
+  else if (k === 'a' || k === 'arrowleft') select((cur - 1 + products.length) % products.length);
+  else if (!item()) return;
+  else if (k === 'g') googleImages();
+  else if (k === 'c') { if (item().img) setCropping(!cropping); }
+  else if (k === 'escape' && cropping) setCropping(false);
+  else if (k === 'enter') { if (item().img) cropping ? applyCrop() : finish(); }
+  else if (k === 'backspace' || k === 'delete') {
+    const it = item(); e.preventDefault();
+    if (!it.points.length) return;
+    it.points.splice(sel >= 0 ? sel : it.points.length - 1, 1); sel = -1;
+    if (it.points.length < 3) it.closed = false;
+    scheduleSave(); render();
+  }
+  else if ('1234'.includes(k) && k) { mode = ['source', 'satin', 'gloss', 'diagram']['1234'.indexOf(k)]; render(); }
+});
+new ResizeObserver(render).observe(document.body);
+
+(async () => {
+  products = await (await fetch('/api/products')).json();
+  document.getElementById('brand').textContent = products[0]?.brand ?? '';
+  renderList();
+  const first = products.findIndex(p => !p.done);
+  const q = new URLSearchParams(location.search).get('i');
+  select(q !== null ? +q : first < 0 ? 0 : first);
+})();
+</script>
+</body>
+</html>

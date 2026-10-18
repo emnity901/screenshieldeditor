@@ -1,0 +1,13 @@
+{
+  "name": "ss-images-fix",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node tool/server.js",
+    "upload": "node tool/scripts/upload.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}
